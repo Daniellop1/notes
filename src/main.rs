@@ -633,9 +633,33 @@ fn generate_highlighted_lines<'a>(app: &'a App) -> Vec<Line<'a>> {
 
         if !is_visual || sel_max <= line_start || sel_min >= line_end {
             // Entirely outside selection or no selection active
-            lines.push(Line::from(Span::styled(line_str.to_string(), base_style)));
+            if !app.search_query.is_empty() && line_str.to_lowercase().contains(&app.search_query.to_lowercase()) {
+                // Search Highlight Logic
+                let lower = line_str.to_lowercase();
+                let q = app.search_query.to_lowercase();
+                let mut ptr = 0;
+                let mut spans = Vec::new();
+                
+                for (idx, _) in lower.match_indices(&q) {
+                    if idx > ptr {
+                        spans.push(Span::styled(line_str[ptr..idx].to_string(), base_style));
+                    }
+                    spans.push(Span::styled(
+                        line_str[idx..idx + q.len()].to_string(), 
+                        base_style.bg(Color::Yellow).fg(Color::Black).add_modifier(Modifier::BOLD)
+                    ));
+                    ptr = idx + q.len();
+                }
+                if ptr < line_len {
+                    spans.push(Span::styled(line_str[ptr..].to_string(), base_style));
+                }
+                lines.push(Line::from(spans));
+            } else {
+                // Standard Rendering
+                lines.push(Line::from(Span::styled(line_str.to_string(), base_style)));
+            }
         } else {
-            // Overlaps with selection
+            // Overlaps with visual selection
             let start_idx = sel_min.saturating_sub(line_start).min(line_len);
             let end_idx = sel_max.saturating_sub(line_start).min(line_len);
 
