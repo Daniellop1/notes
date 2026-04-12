@@ -319,7 +319,7 @@ impl App {
                 self.status_message = format!("Error saving: {}", e);
             } else {
                 let lock_mark = if self.vault_active {
-                    format!(" 🔒 {}", self.encrypt_bits.label())
+                    format!(" [{}] ", self.encrypt_bits.label())
                 } else {
                     String::new()
                 };
@@ -439,7 +439,7 @@ impl App {
                 self.vault_active = false;
                 self.master_password.clear();
             } else {
-                self.status_message = format!("Vault unlocked ({}) - saves will be encrypted. 🔒", algo);
+                self.status_message = format!("Vault unlocked ({}) - saves will be encrypted. [LOCKED]", algo);
             }
         }
     }
@@ -1084,7 +1084,7 @@ fn ui(f: &mut Frame, app: &mut App) {
 
     // Compose top bar with vault status aligned right
     let vault_label = if app.vault_active {
-        format!(" 🔒 {} ", app.encrypt_bits.label())
+        format!(" [{}] ", app.encrypt_bits.label())
     } else {
         " No Vault ".to_string()
     };
@@ -1120,7 +1120,7 @@ fn ui(f: &mut Frame, app: &mut App) {
                 let b = m.len();
                 if b >= 1024 { format!("{} KB", b / 1024) } else { format!("{} B", b) }
             }).unwrap_or_default();
-            let lock = if app.vault_active && active_path.as_ref() == Some(p) { "🔒 " } else { "" };
+            let lock = if app.vault_active && active_path.as_ref() == Some(p) { "[*] " } else { "" };
             let label = format!("{}{:<14} {:>6}", lock, 
                 if name.len() > 14 { format!("{}…", &name[..13]) } else { name.clone() },
                 size_str);
@@ -1356,13 +1356,13 @@ fn ui(f: &mut Frame, app: &mut App) {
             Constraint::Length(h_margin), Constraint::Length(44), Constraint::Min(0)]).split(area_v)[1];
 
         let masked = "*".repeat(app.prompt_buffer.len());
-        let vault_status = if app.vault_active { " [ACTIVE 🔒] " } else { " [OFF] " };
+        let vault_status = if app.vault_active { " [ACTIVE] " } else { " [OFF] " };
         let p_text = format!("Password{}: {}", vault_status, masked);
         let hint = "\n(Enter to confirm, Esc to cancel, empty=disable)";
         let full_text = format!("{}{}", p_text, hint);
 
         let block = Block::default()
-            .title(" 🔐 Vault Encryption ")
+            .title(" Vault Encryption ")
             .borders(Borders::ALL)
             .border_type(BorderType::Double)
             .style(Style::default().bg(Color::Reset).fg(Color::Magenta));
