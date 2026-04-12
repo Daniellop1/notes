@@ -1,4 +1,3 @@
-use magic_crypt::{new_magic_crypt, MagicCryptTrait};
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
@@ -23,14 +22,9 @@ impl EncryptBits {
             EncryptBits::B64  => "DES-64",
             EncryptBits::B128 => "AES-128",
             EncryptBits::B192 => "AES-192",
-            EncryptBits::B256 => "AES-256",
+            EncryptBits::B256 => "AES-256-GCM",
         }
     }
-}
-
-pub struct DecryptResult {
-    pub content: String,
-    pub migration_needed: bool,
 }
 
 pub struct Vault;
@@ -40,28 +34,16 @@ impl Vault {
     const SALT_LEN: usize = 16;
     const NONCE_LEN: usize = 12;
 
-    pub fn make_legacy_header(bits: EncryptBits) -> String {
-        let b: u16 = match bits {
-            EncryptBits::B64  => 64,
-            EncryptBits::B128 => 128,
-            EncryptBits::B192 => 192,
-            EncryptBits::B256 => 256,
-        };
-        format!("VAULT:{}:\n", b)
-    }
-
     pub fn encrypt(content: &str, password: &str, _bits: EncryptBits) -> String {
         if password.is_empty() {
             return content.to_string();
         }
 
-        // --- SECURE V2 IMPLEMENTATION (AES-256-GCM + Argon2id) ---
         let mut salt = [0u8; Self::SALT_LEN];
         let mut nonce_bytes = [0u8; Self::NONCE_LEN];
         thread_rng().fill_bytes(&mut salt);
         thread_rng().fill_bytes(&mut nonce_bytes);
 
-        // Derive 256-bit key using Argon2id
         let mut key = [0u8; 32];
         let argon2 = Argon2::default();
         if let Err(_) = argon2.hash_password_into(password.as_bytes(), &salt, &mut key) {
@@ -85,9 +67,8 @@ impl Vault {
         }
     }
 
-    pub fn decrypt(raw: &str, password: &str) -> Result<DecryptResult, String> {
+    pub fn decrypt(raw: &str, password: &str) -> Result<String, String> {
         if raw.starts_with(Self::V2_HEADER) {
-            // --- SECURE V2 DECRYPTION ---
             if password.is_empty() {
                 return Err("[LOCKED - AES-256-GCM encrypted]\n\nType :vault to unlock this note.".to_string());
             }
@@ -114,41 +95,14 @@ impl Vault {
             let plaintext_bytes = cipher.decrypt(nonce, ciphertext)
                 .map_err(|_| "[WRONG PASSWORD or TAMPERED DATA - Decryption failed]".to_string())?;
 
-            let content = String::from_utf8(plaintext_bytes)
-                .map_err(|_| "Invalid UTF-8 content".to_string())?;
-
-            Ok(DecryptResult { content, migration_needed: false })
+            String::from_utf8(plaintext_bytes)
+                .map_err(|_| "Invalid UTF-8 content".to_string())
 
         } else if raw.starts_with("VAULT:") {
-            // --- LEGACY V1 DECRYPTION (MIGRATION MODE) ---
-            let rest = &raw[6..];
-            if let Some(colon_pos) = rest.find(':') {
-                let bits_str = &rest[..colon_pos];
-                let payload = &rest[colon_pos + 2..].trim();
-                let bits = bits_str.parse::<u16>().map_err(|_| "Invalid legacy header")?;
-
-                if password.is_empty() {
-                    let label = match bits { 64 => "DES-64", 128 => "AES-128", 192 => "AES-192", _ => "AES-256" };
-                    return Err(format!("[LOCKED - {} legacy encrypted]\n\nThis note uses an insecure format. Type :vault to unlock and migrate.", label));
-                }
-
-                let result = match bits {
-                    64  => { let mc = new_magic_crypt!(password, 64);  mc.decrypt_base64_to_string(payload) }
-                    128 => { let mc = new_magic_crypt!(password, 128); mc.decrypt_base64_to_string(payload) }
-                    192 => { let mc = new_magic_crypt!(password, 192); mc.decrypt_base64_to_string(payload) }
-                    _   => { let mc = new_magic_crypt!(password, 256); mc.decrypt_base64_to_string(payload) }
-                };
-
-                match result {
-                    Ok(content) => Ok(DecryptResult { content, migration_needed: true }),
-                    Err(_) => Err("[WRONG PASSWORD - Legacy decryption failed]".to_string()),
-                }
-            } else {
-                Err("Incomplete legacy header".to_string())
-            }
+            Err("[INSECURE LEGACY FORMAT - Cannot decrypt]\n\nThis note uses a deprecated format. Please restore it using an older version of the app.".into())
         } else {
             // Plaintext
-            Ok(DecryptResult { content: raw.to_string(), migration_needed: false })
+            Ok(raw.to_string())
         }
     }
 }

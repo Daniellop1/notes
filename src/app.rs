@@ -172,22 +172,17 @@ impl App {
                     self.active_file = Some(path.clone());
                     let raw = fs::read_to_string(&path).unwrap_or_default();
                     match Vault::decrypt(&raw, &self.master_password) {
-                        Ok(res) => {
-                            self.content = res.content;
-                            if res.migration_needed {
-                                self.is_modified = true;
-                                self.status_message = "Migrating note to secure format... [Save to finalize]".into();
-                            } else {
-                                self.status_message = format!("Loaded: {}", path.file_name().unwrap_or_default().to_string_lossy());
-                            }
+                        Ok(content) => {
+                            self.content = content;
+                            self.status_message = format!("Loaded: {}", path.file_name().unwrap_or_default().to_string_lossy());
                         }
                         Err(e) => {
                             self.content = e;
-                            self.is_modified = false;
                             self.status_message = "Decryption failed or file locked.".into();
                         }
                     }
                     self.cursor_index = 0; 
+                    self.is_modified = false;
                     self.editor_scroll_y = 0;
                     self.editor_scroll_x = 0;
                     self.visual_anchor = None;
@@ -235,15 +230,10 @@ impl App {
         if let Some(path) = self.active_file.clone() {
             let raw = fs::read_to_string(&path).unwrap_or_default();
             match Vault::decrypt(&raw, &self.master_password) {
-                Ok(res) => {
-                    self.content = res.content;
+                Ok(content) => {
+                    self.content = content;
                     self.cursor_index = self.cursor_index.min(self.content.len());
-                    if res.migration_needed {
-                        self.is_modified = true;
-                        self.status_message = "Vault unlocked (Legacy). Save to migrate to secure AES-GCM.".into();
-                    } else {
-                        self.status_message = format!("Vault unlocked (AES-256-GCM) - saves will be encrypted. [LOCKED]");
-                    }
+                    self.status_message = format!("Vault unlocked (AES-256-GCM) - saves will be encrypted. [LOCKED]");
                 }
                 Err(e) => {
                     self.status_message = e;
