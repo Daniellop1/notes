@@ -137,6 +137,25 @@ impl Theme {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum EncryptBits {
+    B64,
+    B128,
+    B192,
+    B256,
+}
+
+impl EncryptBits {
+    fn label(&self) -> &'static str {
+        match self {
+            EncryptBits::B64  => "DES-64",
+            EncryptBits::B128 => "AES-128",
+            EncryptBits::B192 => "AES-192",
+            EncryptBits::B256 => "AES-256",
+        }
+    }
+}
+
 struct App {
     mode: AppMode,
     notes_dir: PathBuf,
@@ -153,7 +172,7 @@ struct App {
     status_message: String,
     editor_scroll_y: u16,
     editor_scroll_x: u16,
-    
+
     // Epic Toggle Features
     is_zen_mode: bool,
     theme: Theme,
@@ -163,6 +182,11 @@ struct App {
     // Vault Encryption
     master_password: String,
     vault_active: bool,
+    encrypt_bits: EncryptBits,
+
+    // UI State
+    is_modified: bool,
+    pending_quit: bool,
 }
 
 impl App {
@@ -198,6 +222,9 @@ impl App {
             redo_stack: Vec::new(),
             master_password: String::new(),
             vault_active: false,
+            encrypt_bits: EncryptBits::B256,
+            is_modified: false,
+            pending_quit: false,
         };
 
         app.refresh_files();
@@ -278,6 +305,7 @@ impl App {
                     self.visual_anchor = None;
                     self.undo_stack.clear();
                     self.redo_stack.clear();
+                    self.is_modified = false;
                     self.status_message = format!("Loaded: {}", path.file_name().unwrap_or_default().to_string_lossy());
                 }
             }
@@ -290,8 +318,14 @@ impl App {
             if let Err(e) = fs::write(path, &data) {
                 self.status_message = format!("Error saving: {}", e);
             } else {
-                let lock_mark = if self.vault_active { " 🔒" } else { "" };
+                let lock_mark = if self.vault_active {
+                    format!(" 🔒 {}", self.encrypt_bits.label())
+                } else {
+                    String::new()
+                };
                 self.status_message = format!("Saved{}", lock_mark);
+                self.is_modified = false;
+                self.pending_quit = false;
             }
         }
     }
@@ -299,8 +333,12 @@ impl App {
     // --- Vault Encryption Engine ---
     fn encrypt_content(&self, content: &str) -> String {
         if self.vault_active && !self.master_password.is_empty() {
-            let mc = new_magic_crypt!(&self.master_password, 256);
-            mc.encrypt_str_to_base64(content)
+            match self.encrypt_bits {
+                EncryptBits::B64  => { let mc = new_magic_crypt!(&self.master_password, 64);  mc.encrypt_str_to_base64(content) }
+                EncryptBits::B128 => { let mc = new_magic_crypt!(&self.master_password, 128); mc.encrypt_str_to_base64(content) }
+                EncryptBits::B192 => { let mc = new_magic_crypt!(&self.master_password, 192); mc.encrypt_str_to_base64(content) }
+                EncryptBits::B256 => { let mc = new_magic_crypt!(&self.master_password, 256); mc.encrypt_str_to_base64(content) }
+            }
         } else {
             content.to_string()
         }
@@ -308,9 +346,13 @@ impl App {
 
     fn decrypt_content(&self, raw: &str) -> String {
         if self.vault_active && !self.master_password.is_empty() {
-            let mc = new_magic_crypt!(&self.master_password, 256);
-            mc.decrypt_base64_to_string(raw)
-                .unwrap_or_else(|_| raw.to_string()) // Graceful fallback to plaintext
+            let result = match self.encrypt_bits {
+                EncryptBits::B64  => { let mc = new_magic_crypt!(&self.master_password, 64);  mc.decrypt_base64_to_string(raw) }
+                EncryptBits::B128 => { let mc = new_magic_crypt!(&self.master_password, 128); mc.decrypt_base64_to_string(raw) }
+                EncryptBits::B192 => { let mc = new_magic_crypt!(&self.master_password, 192); mc.decrypt_base64_to_string(raw) }
+                EncryptBits::B256 => { let mc = new_magic_crypt!(&self.master_password, 256); mc.decrypt_base64_to_string(raw) }
+            };
+            result.unwrap_or_else(|_| raw.to_string())
         } else {
             raw.to_string()
         }
@@ -506,6 +548,7 @@ impl App {
     fn insert_char(&mut self, c: char) {
         self.content.insert(self.cursor_index, c);
         self.cursor_index += c.len_utf8();
+        self.is_modified = true;
     }
 
     fn insert_string(&mut self, s: &str) {
@@ -521,6 +564,7 @@ impl App {
             while !self.content.is_char_boundary(index) { index -= 1; }
             self.content.remove(index);
             self.cursor_index = index;
+            self.is_modified = true;
         }
     }
 
@@ -609,6 +653,7 @@ impl App {
             self.cursor_index = start;
             self.mode = AppMode::Normal;
             self.visual_anchor = None;
+            self.is_modified = true;
             self.status_message = format!("Cut {} bytes.", self.clipboard.len());
             self.save_file();
         }
@@ -702,8 +747,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     match app.mode {
                         AppMode::Normal => match (key.code, key.modifiers) {
                             (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                                app.save_file();
-                                return Ok(());
+                                if app.is_modified && !app.pending_quit {
+                                    app.pending_quit = true;
+                                    app.status_message = "Unsaved changes! Press 'q' again to quit, or ':w' to save.".into();
+                                } else {
+                                    app.save_file();
+                                    return Ok(());
+                                }
                             }
                             (KeyCode::Char('u'), _) => app.perform_undo(),
                             (KeyCode::Char('r'), KeyModifiers::CONTROL) => app.perform_redo(),
@@ -803,10 +853,17 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                 } else if app.command_buffer.starts_with(":theme ") {
                                     let theme_name = app.command_buffer.replace(":theme ", "");
                                     app.set_theme(&theme_name);
-                                } else if app.command_buffer == ":vault" {
+                                } else if app.command_buffer.starts_with(":vault") {
+                                    // Parse optional bit strength: :vault, :vault 64, :vault 128, :vault 192, :vault 256
+                                    let arg = app.command_buffer.trim_start_matches(":vault").trim();
+                                    app.encrypt_bits = match arg {
+                                        "64"  => EncryptBits::B64,
+                                        "128" => EncryptBits::B128,
+                                        "192" => EncryptBits::B192,
+                                        _     => EncryptBits::B256, // default
+                                    };
                                     app.mode = AppMode::PromptVaultPassword;
                                     app.prompt_buffer.clear();
-                                    // Don't drop into Normal yet
                                     app.command_buffer.clear();
                                     continue;
                                 }
@@ -966,9 +1023,19 @@ fn ui(f: &mut Frame, app: &mut App) {
         ])
         .split(f.area());
 
-    let top_bar = Paragraph::new(" NOTES ")
-        .style(Style::default().bg(app.theme.top_bg).fg(app.theme.top_fg).add_modifier(Modifier::BOLD))
-        .alignment(ratatui::layout::Alignment::Center);
+    // Compose top bar with vault status aligned right
+    let vault_label = if app.vault_active {
+        format!(" 🔒 {} ", app.encrypt_bits.label())
+    } else {
+        " No Vault ".to_string()
+    };
+    let total_width = f.area().width as usize;
+    let title_str = "NOTES";
+    let padding = total_width.saturating_sub(title_str.len() + vault_label.len() + 1);
+    let top_text = format!("{:^width$}{}", title_str, vault_label, width = padding + title_str.len());
+
+    let top_bar = Paragraph::new(top_text)
+        .style(Style::default().bg(app.theme.top_bg).fg(app.theme.top_fg).add_modifier(Modifier::BOLD));
     f.render_widget(top_bar, chunks[0]);
 
     // Apply Zen Mode Layout
@@ -985,11 +1052,27 @@ fn ui(f: &mut Frame, app: &mut App) {
 
     // --- Left Pane: File Explorer ---
     if !app.is_zen_mode {
-        let items: Vec<ListItem> = app.files.iter()
-            .map(|f| ListItem::new(f.file_name().unwrap_or_default().to_string_lossy().to_string()))
-            .collect();
+        let note_count = app.files.len();
+        let active_path = app.active_file.clone();
 
-        let title = if app.mode == AppMode::Normal { " [Files] " } else { " Files " };
+        let items: Vec<ListItem> = app.files.iter().map(|p| {
+            let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let size_str = std::fs::metadata(p).map(|m| {
+                let b = m.len();
+                if b >= 1024 { format!("{} KB", b / 1024) } else { format!("{} B", b) }
+            }).unwrap_or_default();
+            let lock = if app.vault_active && active_path.as_ref() == Some(p) { "🔒 " } else { "" };
+            let label = format!("{}{:<14} {:>6}", lock, 
+                if name.len() > 14 { format!("{}…", &name[..13]) } else { name.clone() },
+                size_str);
+            ListItem::new(label)
+        }).collect();
+
+        let title = if app.mode == AppMode::Normal {
+            format!(" [Files] ({}) ", note_count)
+        } else {
+            format!(" Files ({}) ", note_count)
+        };
         
         let border_color = if app.mode == AppMode::Normal { app.theme.border_focused } else { app.theme.border };
         
@@ -1006,15 +1089,20 @@ fn ui(f: &mut Frame, app: &mut App) {
     }
 
     // --- Right Pane: Editor & Scrollbar ---
+    let modified_mark = if app.is_modified { " [+]" } else { "" };
     let e_title = match app.mode {
-        AppMode::Insert => " [Editor (INSERT)] ",
-        AppMode::Visual => " [Editor (VISUAL)] ",
-        _ => if app.is_zen_mode { " Focus Mode " } else { " Editor " },
+        AppMode::Insert => format!(" [Editor (INSERT)]{} ", modified_mark),
+        AppMode::Visual => format!(" [Editor (VISUAL)]{} ", modified_mark),
+        _ => if app.is_zen_mode {
+            format!(" Focus Mode{} ", modified_mark)
+        } else {
+            format!(" Editor{} ", modified_mark)
+        },
     };
     
     let editor_border_color = match app.mode {
         AppMode::Insert | AppMode::Visual => app.theme.border_focused,
-        _ => app.theme.border,
+        _ => if app.is_modified { Color::Yellow } else { app.theme.border },
     };
     
     let editor_block = Block::default()
@@ -1083,17 +1171,24 @@ fn ui(f: &mut Frame, app: &mut App) {
         None => "[No File]".into(),
     };
 
-    let (filter_mark, color) = match app.mode {
-        AppMode::Normal => (if app.search_query.is_empty() { "" } else { "[Filtered] " }, app.theme.status_normal),
-        AppMode::Insert => ("", app.theme.status_insert),
-        AppMode::Command => ("", app.theme.status_command),
-        AppMode::Visual => ("", app.theme.status_visual),
-        _ => ("", app.theme.status_other),
+    let color = match app.mode {
+        AppMode::Normal  => app.theme.status_normal,
+        AppMode::Insert  => app.theme.status_insert,
+        AppMode::Command => app.theme.status_command,
+        AppMode::Visual  => app.theme.status_visual,
+        _ => app.theme.status_other,
     };
 
     let status_text = match app.mode {
         AppMode::Command => format!("{}  {}", mode_str, app.command_buffer),
-        _ => format!("{}{} | File: {} | (? for Help) | {}", mode_str, filter_mark, file_info, app.status_message),
+        _ => {
+            let (col, row) = app.get_visual_cursor();
+            let ln_col = format!("Ln {}, Col {}", row + 1, col + 1);
+            let modified_str = if app.is_modified { " [+]" } else { "" };
+            let filter_str = if !app.search_query.is_empty() { "[Filtered] " } else { "" };
+            format!("{}{}{} | File: {} | {} | {}",
+                mode_str, filter_str, modified_str, file_info, ln_col, app.status_message)
+        }
     };
 
     let status_bar = Paragraph::new(status_text)
