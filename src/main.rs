@@ -187,6 +187,7 @@ struct App {
     // UI State
     is_modified: bool,
     pending_quit: bool,
+    pending_delete: bool,
 }
 
 impl App {
@@ -225,6 +226,7 @@ impl App {
             encrypt_bits: EncryptBits::B256,
             is_modified: false,
             pending_quit: false,
+            pending_delete: false,
         };
 
         app.refresh_files();
@@ -281,6 +283,7 @@ impl App {
                 self.file_list_state.select(Some(self.files.len() - 1));
             }
         }
+        self.pending_delete = false;
     }
 
     fn load_file(&mut self) {
@@ -306,6 +309,7 @@ impl App {
                     self.undo_stack.clear();
                     self.redo_stack.clear();
                     self.is_modified = false;
+                    self.pending_delete = false;
                     self.status_message = format!("Loaded: {}", path.file_name().unwrap_or_default().to_string_lossy());
                 }
             }
@@ -855,12 +859,29 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                     app.status_message = "Entering Insert Mode".into();
                                 }
                             }
-                            (KeyCode::Char('d'), _) => app.delete_file(),
+                            (KeyCode::Char('d'), _) => {
+                                if app.pending_delete {
+                                    app.pending_delete = false;
+                                    app.delete_file();
+                                } else {
+                                    let name = app.active_file.as_ref()
+                                        .and_then(|p| p.file_name())
+                                        .map(|n| n.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| "this note".into());
+                                    app.pending_delete = true;
+                                    app.status_message = format!("Delete '{}'? Press 'd' again to confirm, any other key to cancel.", name);
+                                }
+                            }
                             (KeyCode::Char(':'), _) => {
                                 app.mode = AppMode::Command;
                                 app.command_buffer = ":".to_string();
                             }
-                            _ => {}
+                            _ => {
+                                if app.pending_delete {
+                                    app.pending_delete = false;
+                                    app.status_message = "Delete cancelled.".into();
+                                }
+                            }
                         },
                         AppMode::Insert => match (key.code, key.modifiers) {
                             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
