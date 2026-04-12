@@ -330,31 +330,76 @@ impl App {
         }
     }
 
-    // --- Vault Encryption Engine ---
+    // --- Vault Encryption Engine (Self-Describing Format) ---
+    //
+    // Encrypted files are saved with a prefix: "VAULT:256:\n" + base64
+    // This means ANY file can be identified as encrypted without app state.
+    // On load, if the header is detected and vault is active, we decrypt.
+    // If header is detected but vault is OFF, we show a "locked" indicator.
+
+    fn make_vault_header(&self) -> String {
+        let bits: u16 = match self.encrypt_bits {
+            EncryptBits::B64  => 64,
+            EncryptBits::B128 => 128,
+            EncryptBits::B192 => 192,
+            EncryptBits::B256 => 256,
+        };
+        format!("VAULT:{}:\n", bits)
+    }
+
     fn encrypt_content(&self, content: &str) -> String {
         if self.vault_active && !self.master_password.is_empty() {
-            match self.encrypt_bits {
+            let header = self.make_vault_header();
+            let encrypted = match self.encrypt_bits {
                 EncryptBits::B64  => { let mc = new_magic_crypt!(&self.master_password, 64);  mc.encrypt_str_to_base64(content) }
                 EncryptBits::B128 => { let mc = new_magic_crypt!(&self.master_password, 128); mc.encrypt_str_to_base64(content) }
                 EncryptBits::B192 => { let mc = new_magic_crypt!(&self.master_password, 192); mc.encrypt_str_to_base64(content) }
                 EncryptBits::B256 => { let mc = new_magic_crypt!(&self.master_password, 256); mc.encrypt_str_to_base64(content) }
-            }
+            };
+            format!("{}{}", header, encrypted)
         } else {
             content.to_string()
         }
     }
 
+    /// Detects if raw file bytes have a vault header.
+    /// Returns the (bits, base64_payload) if encrypted, or None if plaintext.
+    fn parse_vault_header(raw: &str) -> Option<(u16, &str)> {
+        if raw.starts_with("VAULT:") {
+            let rest = &raw[6..];
+            if let Some(colon_pos) = rest.find(':') {
+                let bits_str = &rest[..colon_pos];
+                // payload is after bits + ":\n"
+                let payload = &rest[colon_pos + 2..];
+                if let Ok(bits) = bits_str.parse::<u16>() {
+                    return Some((bits, payload));
+                }
+            }
+        }
+        None
+    }
+
     fn decrypt_content(&self, raw: &str) -> String {
-        if self.vault_active && !self.master_password.is_empty() {
-            let result = match self.encrypt_bits {
-                EncryptBits::B64  => { let mc = new_magic_crypt!(&self.master_password, 64);  mc.decrypt_base64_to_string(raw) }
-                EncryptBits::B128 => { let mc = new_magic_crypt!(&self.master_password, 128); mc.decrypt_base64_to_string(raw) }
-                EncryptBits::B192 => { let mc = new_magic_crypt!(&self.master_password, 192); mc.decrypt_base64_to_string(raw) }
-                EncryptBits::B256 => { let mc = new_magic_crypt!(&self.master_password, 256); mc.decrypt_base64_to_string(raw) }
-            };
-            result.unwrap_or_else(|_| raw.to_string())
-        } else {
-            raw.to_string()
+        match Self::parse_vault_header(raw) {
+            Some((bits, payload)) => {
+                // File is encrypted. Only attempt decryption if vault is active + password set.
+                if self.master_password.is_empty() {
+                    // Return a user-friendly placeholder
+                    return format!("[LOCKED - {} encrypted]\n\nType :vault to unlock this note.", 
+                        match bits { 64 => "DES-64", 128 => "AES-128", 192 => "AES-192", _ => "AES-256" });
+                }
+                let result = match bits {
+                    64  => { let mc = new_magic_crypt!(&self.master_password, 64);  mc.decrypt_base64_to_string(payload) }
+                    128 => { let mc = new_magic_crypt!(&self.master_password, 128); mc.decrypt_base64_to_string(payload) }
+                    192 => { let mc = new_magic_crypt!(&self.master_password, 192); mc.decrypt_base64_to_string(payload) }
+                    _   => { let mc = new_magic_crypt!(&self.master_password, 256); mc.decrypt_base64_to_string(payload) }
+                };
+                match result {
+                    Ok(plain) => plain,
+                    Err(_) => "[WRONG PASSWORD - decryption failed]\n\nType :vault to try a different password.".to_string(),
+                }
+            }
+            None => raw.to_string(), // Plaintext file, return as-is
         }
     }
 
@@ -364,24 +409,38 @@ impl App {
         self.mode = AppMode::Normal;
 
         if password.is_empty() {
-            // Disable vault if empty password given
+            // Disable vault — save current file as plaintext if it's in buffer
             self.vault_active = false;
             self.master_password.clear();
-            self.status_message = "Vault disabled. Notes will be saved as plaintext.".into();
+            self.status_message = "Vault disabled. New saves will be plaintext.".into();
+            // Re-load the current file to show it (decrypted state stays)
             return;
         }
 
         self.master_password = password;
         self.vault_active = true;
 
-        // Attempt to re-decrypt the current buffer with the new password
+        // Re-read the active file from disk and attempt decryption with new password
         if let Some(path) = self.active_file.clone() {
             let raw = fs::read_to_string(&path).unwrap_or_default();
             let decoded = self.decrypt_content(&raw);
-            // Sanity check: if decoded is readable UTF-8-ish Markdown, it worked
             self.content = decoded;
             self.cursor_index = self.cursor_index.min(self.content.len());
-            self.status_message = "Vault unlocked. Notes are now encrypted on save. 🔒".into();
+
+            let algo = match self.encrypt_bits {
+                EncryptBits::B64  => "DES-64",
+                EncryptBits::B128 => "AES-128",
+                EncryptBits::B192 => "AES-192",
+                EncryptBits::B256 => "AES-256",
+            };
+
+            if self.content.starts_with("[WRONG PASSWORD") {
+                self.status_message = "Wrong password! File still locked.".into();
+                self.vault_active = false;
+                self.master_password.clear();
+            } else {
+                self.status_message = format!("Vault unlocked ({}) - saves will be encrypted. 🔒", algo);
+            }
         }
     }
 
