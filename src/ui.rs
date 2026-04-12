@@ -115,8 +115,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         ])
         .split(f.area());
 
-    let vault_label = if app.vault_active {
-        format!(" [{}] ", app.encrypt_bits.label())
+    let vault_label = if app.active_file_is_encrypted {
+        format!(" [SECURE: {}] ", app.encrypt_bits.label())
+    } else if app.vault_active {
+        " [PLAIN] (Save to secure) ".to_string()
     } else {
         " No Vault ".to_string()
     };
@@ -142,7 +144,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     if !app.is_zen_mode {
         let note_count = app.files.len();
-        let active_path = app.active_file.clone();
 
         let items: Vec<ListItem> = app.files.iter().map(|p| {
             let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
@@ -150,7 +151,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 let b = m.len();
                 if b >= 1024 { format!("{} KB", b / 1024) } else { format!("{} B", b) }
             }).unwrap_or_default();
-            let lock = if app.vault_active && active_path.as_ref() == Some(p) { "[*] " } else { "" };
+            let lock = if app.encrypted_files.contains(p) { "[*] " } else { "" };
             let label = format!("{}{:<14} {:>6}", lock, 
                 if name.len() > 14 { format!("{}…", &name[..13]) } else { name.clone() },
                 size_str);

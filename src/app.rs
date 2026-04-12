@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::{fs, path::PathBuf};
 use ratatui::widgets::ListState;
 use crate::theme::Theme;
@@ -52,6 +53,8 @@ pub struct App {
     pub is_modified: bool,
     pub pending_quit: bool,
     pub pending_delete: bool,
+    pub active_file_is_encrypted: bool,
+    pub encrypted_files: HashSet<PathBuf>,
 }
 
 impl App {
@@ -91,6 +94,8 @@ impl App {
             is_modified: false,
             pending_quit: false,
             pending_delete: false,
+            active_file_is_encrypted: false,
+            encrypted_files: HashSet::new(),
         };
 
         // Apply saved theme from config
@@ -120,6 +125,7 @@ impl App {
 
     pub fn refresh_files(&mut self) {
         self.files.clear();
+        self.encrypted_files.clear();
         if let Ok(entries) = fs::read_dir(&self.notes_dir) {
             let q = self.search_query.to_lowercase();
             for entry in entries.flatten() {
@@ -127,20 +133,23 @@ impl App {
                 if path.is_file() && path.extension().map_or(false, |ext| ext == "md") {
                     let fname = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
                     
-                    let matches = if self.search_query.is_empty() {
-                        true
-                    } else if fname.contains(&q) {
-                        true
-                    } else {
-                        if let Ok(content) = fs::read_to_string(&path) {
-                            content.to_lowercase().contains(&q)
-                        } else {
-                            false
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        // Track encryption status
+                        if Vault::is_encrypted(&content) {
+                            self.encrypted_files.insert(path.clone());
                         }
-                    };
 
-                    if matches {
-                        self.files.push(path);
+                        let matches = if self.search_query.is_empty() {
+                            true
+                        } else if fname.contains(&q) {
+                            true
+                        } else {
+                            content.to_lowercase().contains(&q)
+                        };
+
+                        if matches {
+                            self.files.push(path);
+                        }
                     }
                 }
             }
@@ -171,10 +180,16 @@ impl App {
                     }
                     self.active_file = Some(path.clone());
                     let raw = fs::read_to_string(&path).unwrap_or_default();
+                    self.active_file_is_encrypted = Vault::is_encrypted(&raw);
+
                     match Vault::decrypt(&raw, &self.master_password) {
                         Ok(content) => {
                             self.content = content;
-                            self.status_message = format!("Loaded: {}", path.file_name().unwrap_or_default().to_string_lossy());
+                            if self.vault_active && !self.active_file_is_encrypted {
+                                self.status_message = "NOTE IS PLAIN. Save (:w) to encrypt with vault.".into();
+                            } else {
+                                self.status_message = format!("Loaded: {}", path.file_name().unwrap_or_default().to_string_lossy());
+                            }
                         }
                         Err(e) => {
                             self.content = e;
@@ -208,6 +223,12 @@ impl App {
                 self.status_message = format!("Saved{}", lock_mark);
                 self.is_modified = false;
                 self.pending_quit = false;
+                self.active_file_is_encrypted = self.vault_active;
+                if self.vault_active {
+                    self.encrypted_files.insert(path.clone());
+                } else {
+                    self.encrypted_files.remove(path);
+                }
             }
         }
     }
@@ -229,11 +250,19 @@ impl App {
 
         if let Some(path) = self.active_file.clone() {
             let raw = fs::read_to_string(&path).unwrap_or_default();
+            self.active_file_is_encrypted = Vault::is_encrypted(&raw);
+
             match Vault::decrypt(&raw, &self.master_password) {
                 Ok(content) => {
                     self.content = content;
                     self.cursor_index = self.cursor_index.min(self.content.len());
-                    self.status_message = format!("Vault unlocked (AES-256-GCM) - saves will be encrypted. [LOCKED]");
+                    
+                    if !self.active_file_is_encrypted {
+                        self.status_message = "Vault active. Save now to secure this note!".into();
+                        self.is_modified = true; // Trigger save reminder
+                    } else {
+                        self.status_message = "Vault unlocked (AES-256-GCM) - [LOCKED]".into();
+                    }
                 }
                 Err(e) => {
                     self.status_message = e;

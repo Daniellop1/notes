@@ -34,6 +34,21 @@ impl Vault {
     const SALT_LEN: usize = 16;
     const NONCE_LEN: usize = 12;
 
+    // Explicit Argon2id parameters (High security)
+    const ARGON2_MEM: u32 = 65536; // 64 MB
+    const ARGON2_ITER: u32 = 3;
+    const ARGON2_PARA: u32 = 4;
+
+    fn get_argon2() -> Argon2<'static> {
+        use argon2::{Algorithm, Params, Version};
+        let params = Params::new(Self::ARGON2_MEM, Self::ARGON2_ITER, Self::ARGON2_PARA, Some(32)).unwrap();
+        Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+    }
+
+    pub fn is_encrypted(raw: &str) -> bool {
+        raw.starts_with(Self::V2_HEADER) || raw.starts_with("VAULT:")
+    }
+
     pub fn encrypt(content: &str, password: &str, _bits: EncryptBits) -> String {
         if password.is_empty() {
             return content.to_string();
@@ -45,7 +60,7 @@ impl Vault {
         thread_rng().fill_bytes(&mut nonce_bytes);
 
         let mut key = [0u8; 32];
-        let argon2 = Argon2::default();
+        let argon2 = Self::get_argon2();
         if let Err(_) = argon2.hash_password_into(password.as_bytes(), &salt, &mut key) {
             return "[ENCRYPTION ERROR - KDF failed]".to_string();
         }
@@ -86,7 +101,7 @@ impl Vault {
             let ciphertext = &combined[Self::SALT_LEN + Self::NONCE_LEN..];
 
             let mut key = [0u8; 32];
-            Argon2::default().hash_password_into(password.as_bytes(), salt, &mut key)
+            Self::get_argon2().hash_password_into(password.as_bytes(), salt, &mut key)
                 .map_err(|_| "KDF derivation failed".to_string())?;
 
             let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
