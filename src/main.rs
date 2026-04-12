@@ -26,10 +26,113 @@ enum AppMode {
     Insert,
     Command,
     ShowHelp,
+    ShowStats,
     PromptNewFile,
     PromptRenameFile,
     SearchFile,
     Visual,
+}
+
+// --- Dynamic Theming ---
+#[derive(Clone, Copy)]
+struct Theme {
+    top_bg: Color,
+    top_fg: Color,
+    border: Color,
+    border_focused: Color,
+    status_normal: Color,
+    status_insert: Color,
+    status_command: Color,
+    status_visual: Color,
+    status_other: Color,
+    text_normal: Color,
+    text_heading: Color,
+    text_quote: Color,
+    text_bullet: Color,
+    text_search: Color,
+    text_search_bg: Color,
+}
+
+impl Theme {
+    fn default_theme() -> Self {
+        Self {
+            top_bg: Color::Blue,
+            top_fg: Color::Black,
+            border: Color::Reset,
+            border_focused: Color::Reset,
+            status_normal: Color::Blue,
+            status_insert: Color::Green,
+            status_command: Color::Yellow,
+            status_visual: Color::Rgb(255, 165, 0), // Orange
+            status_other: Color::Magenta,
+            text_normal: Color::White,
+            text_heading: Color::LightBlue,
+            text_quote: Color::Cyan,
+            text_bullet: Color::Yellow,
+            text_search: Color::Black,
+            text_search_bg: Color::Yellow,
+        }
+    }
+
+    fn hacker_theme() -> Self {
+        Self {
+            top_bg: Color::Green,
+            top_fg: Color::Black,
+            border: Color::DarkGray,
+            border_focused: Color::Green,
+            status_normal: Color::Green,
+            status_insert: Color::LightGreen,
+            status_command: Color::DarkGray,
+            status_visual: Color::Yellow,
+            status_other: Color::DarkGray,
+            text_normal: Color::Green,
+            text_heading: Color::LightGreen,
+            text_quote: Color::DarkGray,
+            text_bullet: Color::Green,
+            text_search: Color::Black,
+            text_search_bg: Color::LightGreen,
+        }
+    }
+
+    fn ocean_theme() -> Self {
+        Self {
+            top_bg: Color::Cyan,
+            top_fg: Color::Black,
+            border: Color::Blue,
+            border_focused: Color::Cyan,
+            status_normal: Color::Cyan,
+            status_insert: Color::LightCyan,
+            status_command: Color::LightBlue,
+            status_visual: Color::Magenta,
+            status_other: Color::Blue,
+            text_normal: Color::Cyan,
+            text_heading: Color::LightCyan,
+            text_quote: Color::Blue,
+            text_bullet: Color::Blue,
+            text_search: Color::Black,
+            text_search_bg: Color::White,
+        }
+    }
+
+    fn light_theme() -> Self {
+        Self {
+            top_bg: Color::White,
+            top_fg: Color::Black,
+            border: Color::Black,
+            border_focused: Color::Black,
+            status_normal: Color::White,
+            status_insert: Color::Rgb(220, 220, 220),
+            status_command: Color::Rgb(150, 150, 150),
+            status_visual: Color::Yellow,
+            status_other: Color::DarkGray,
+            text_normal: Color::White, 
+            text_heading: Color::White,
+            text_quote: Color::Rgb(150, 150, 150),
+            text_bullet: Color::White,
+            text_search: Color::Black,
+            text_search_bg: Color::White,
+        }
+    }
 }
 
 struct App {
@@ -48,6 +151,10 @@ struct App {
     status_message: String,
     editor_scroll_y: u16,
     editor_scroll_x: u16,
+    
+    // Epic Toggle Features
+    is_zen_mode: bool,
+    theme: Theme,
 }
 
 impl App {
@@ -77,6 +184,8 @@ impl App {
             status_message: String::new(),
             editor_scroll_y: 0,
             editor_scroll_x: 0,
+            is_zen_mode: false,
+            theme: Theme::default_theme(),
         };
 
         app.refresh_files();
@@ -86,6 +195,16 @@ impl App {
         }
 
         app
+    }
+
+    fn set_theme(&mut self, theme_name: &str) {
+        self.theme = match theme_name.trim() {
+            "hacker" => Theme::hacker_theme(),
+            "ocean" => Theme::ocean_theme(),
+            "light" => Theme::light_theme(),
+            _ => Theme::default_theme(),
+        };
+        self.status_message = format!("Theme changed to '{}'", theme_name);
     }
 
     fn refresh_files(&mut self) {
@@ -102,7 +221,6 @@ impl App {
                     } else if fname.contains(&q) {
                         true
                     } else {
-                        // Check content if filename doesn't match
                         if let Ok(content) = fs::read_to_string(&path) {
                             content.to_lowercase().contains(&q)
                         } else {
@@ -141,7 +259,7 @@ impl App {
                     }
                     self.active_file = Some(path.clone());
                     self.content = fs::read_to_string(&path).unwrap_or_default();
-                    self.cursor_index = 0; // Better reset to 0 instead of end for navigating big files
+                    self.cursor_index = 0; 
                     self.editor_scroll_y = 0;
                     self.editor_scroll_x = 0;
                     self.visual_anchor = None;
@@ -286,10 +404,30 @@ impl App {
         self.file_list_state.select(Some(i));
         self.load_file();
     }
+    
+    fn toggle_task_checkbox(&mut self) {
+        let (_, row) = self.get_visual_cursor();
+        let lines: Vec<&str> = self.content.split('\n').collect();
+        if let Some(line) = lines.get(row as usize) {
+            let mut changed = false;
+            let mut rebuilt: Vec<String> = lines.iter().map(|&s| s.to_string()).collect();
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("- [ ] ") {
+                rebuilt[row as usize] = line.replacen("- [ ] ", "- [x] ", 1);
+                changed = true;
+            } else if trimmed.starts_with("- [x] ") {
+                rebuilt[row as usize] = line.replacen("- [x] ", "- [ ] ", 1);
+                changed = true;
+            }
+            if changed {
+                self.content = rebuilt.join("\n");
+                self.save_file();
+                self.status_message = "Task state toggled.".into();
+            }
+        }
+    }
 
     // --- Cursor Tracking & Scroll Updates ---
-    
-    // Updates internal visual_scroll metrics based on requested view window size 
     fn update_scroll_to_cursor(&mut self, view_height: u16, _view_width: u16) {
         let (_, row) = self.get_visual_cursor();
         if row < self.editor_scroll_y {
@@ -399,7 +537,6 @@ impl App {
             let start = anchor.min(self.cursor_index);
             let end = anchor.max(self.cursor_index);
             self.clipboard = self.content[start..end].to_string();
-            // Drain range
             self.content.drain(start..end);
             self.cursor_index = start;
             self.mode = AppMode::Normal;
@@ -410,7 +547,6 @@ impl App {
     }
 }
 
-// UI Helper
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -463,6 +599,17 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                 app.save_file();
                                 return Ok(());
                             }
+                            // Epic Focus Bindings
+                            (KeyCode::Char('z'), _) => {
+                                app.is_zen_mode = !app.is_zen_mode;
+                                app.status_message = if app.is_zen_mode { "Zen Mode ON".into() } else { "Zen Mode OFF".into() };
+                            }
+                            (KeyCode::Char('i'), KeyModifiers::CONTROL) => {
+                                app.mode = AppMode::ShowStats;
+                            }
+                            (KeyCode::Char(' '), _) => {
+                                app.toggle_task_checkbox();
+                            }
                             (KeyCode::Char('s'), KeyModifiers::CONTROL) => app.save_file(),
                             (KeyCode::Char('j'), _) | (KeyCode::Down, _) => app.next_file(),
                             (KeyCode::Char('k'), _) | (KeyCode::Up, _) => app.previous_file(),
@@ -473,7 +620,6 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                     app.prompt_buffer = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
                                 }
                             }
-                            // Search / Filter
                             (KeyCode::Char('/'), _) => {
                                 app.mode = AppMode::SearchFile;
                                 app.prompt_buffer = app.search_query.clone();
@@ -545,6 +691,9 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                 } else if app.command_buffer == ":wq" {
                                     app.save_file();
                                     return Ok(());
+                                } else if app.command_buffer.starts_with(":theme ") {
+                                    let theme_name = app.command_buffer.replace(":theme ", "");
+                                    app.set_theme(&theme_name);
                                 }
                                 app.mode = AppMode::Normal;
                                 app.command_buffer.clear();
@@ -558,7 +707,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             }
                             _ => {}
                         },
-                        AppMode::ShowHelp => match key.code {
+                        AppMode::ShowHelp | AppMode::ShowStats => match key.code {
                             _ => app.mode = AppMode::Normal,
                         },
                         AppMode::PromptNewFile => match key.code {
@@ -605,12 +754,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
     }
 }
 
-// Generate styled text with Markdown/Visual highlights
 fn generate_highlighted_lines<'a>(app: &'a App) -> Vec<Line<'a>> {
     let mut lines = Vec::new();
     let mut byte_offset = 0;
     
-    // Bounds check visual selection
     let (sel_min, sel_max) = match app.visual_anchor {
         Some(anchor) => (anchor.min(app.cursor_index), anchor.max(app.cursor_index)),
         None => (0, 0),
@@ -620,21 +767,20 @@ fn generate_highlighted_lines<'a>(app: &'a App) -> Vec<Line<'a>> {
     for line_str in app.content.split('\n') {
         let line_len = line_str.len();
         let line_start = byte_offset;
-        let line_end = byte_offset + line_len; // not including newline
+        let line_end = byte_offset + line_len; 
         
-        let mut base_style = Style::default().fg(Color::White);
-        if line_str.starts_with("# ") || line_str.starts_with("## ") {
-            base_style = base_style.fg(Color::LightBlue).add_modifier(Modifier::BOLD);
+        let mut base_style = Style::default().fg(app.theme.text_normal);
+        
+        if line_str.starts_with("# ") || line_str.starts_with("## ") || line_str.starts_with("### ") {
+            base_style = base_style.fg(app.theme.text_heading).add_modifier(Modifier::BOLD);
         } else if line_str.starts_with("> ") {
-            base_style = base_style.fg(Color::Cyan).add_modifier(Modifier::ITALIC);
+            base_style = base_style.fg(app.theme.text_quote).add_modifier(Modifier::ITALIC);
         } else if line_str.starts_with("- ") || line_str.starts_with("* ") {
-            base_style = base_style.fg(Color::Yellow);
+            base_style = base_style.fg(app.theme.text_bullet);
         }
 
         if !is_visual || sel_max <= line_start || sel_min >= line_end {
-            // Entirely outside selection or no selection active
             if !app.search_query.is_empty() && line_str.to_lowercase().contains(&app.search_query.to_lowercase()) {
-                // Search Highlight Logic
                 let lower = line_str.to_lowercase();
                 let q = app.search_query.to_lowercase();
                 let mut ptr = 0;
@@ -646,7 +792,7 @@ fn generate_highlighted_lines<'a>(app: &'a App) -> Vec<Line<'a>> {
                     }
                     spans.push(Span::styled(
                         line_str[idx..idx + q.len()].to_string(), 
-                        base_style.bg(Color::Yellow).fg(Color::Black).add_modifier(Modifier::BOLD)
+                        base_style.bg(app.theme.text_search_bg).fg(app.theme.text_search).add_modifier(Modifier::BOLD)
                     ));
                     ptr = idx + q.len();
                 }
@@ -655,11 +801,9 @@ fn generate_highlighted_lines<'a>(app: &'a App) -> Vec<Line<'a>> {
                 }
                 lines.push(Line::from(spans));
             } else {
-                // Standard Rendering
                 lines.push(Line::from(Span::styled(line_str.to_string(), base_style)));
             }
         } else {
-            // Overlaps with visual selection
             let start_idx = sel_min.saturating_sub(line_start).min(line_len);
             let end_idx = sel_max.saturating_sub(line_start).min(line_len);
 
@@ -670,7 +814,8 @@ fn generate_highlighted_lines<'a>(app: &'a App) -> Vec<Line<'a>> {
             if start_idx < end_idx {
                 spans.push(Span::styled(
                     line_str[start_idx..end_idx].to_string(), 
-                    base_style.bg(Color::DarkGray)
+                    // Using visual standard regardless of theme for safety, or we could add generic overlay.
+                    base_style.bg(Color::DarkGray) 
                 ));
             }
             if end_idx < line_len {
@@ -679,7 +824,7 @@ fn generate_highlighted_lines<'a>(app: &'a App) -> Vec<Line<'a>> {
             lines.push(Line::from(spans));
         }
 
-        byte_offset += line_len + 1; // +1 to account for the \n dropped by split
+        byte_offset += line_len + 1;
     }
     
     lines
@@ -696,42 +841,64 @@ fn ui(f: &mut Frame, app: &mut App) {
         .split(f.area());
 
     let top_bar = Paragraph::new(" NOTES ")
-        .style(Style::default().bg(Color::Blue).fg(Color::Black).add_modifier(Modifier::BOLD))
+        .style(Style::default().bg(app.theme.top_bg).fg(app.theme.top_fg).add_modifier(Modifier::BOLD))
         .alignment(ratatui::layout::Alignment::Center);
     f.render_widget(top_bar, chunks[0]);
 
+    // Apply Zen Mode Layout
+    let (left_pane_width, right_pane_width) = if app.is_zen_mode {
+        (0, 100)
+    } else {
+        (25, 75)
+    };
+
     let main_panes = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+        .constraints([Constraint::Percentage(left_pane_width), Constraint::Percentage(right_pane_width)])
         .split(chunks[1]);
 
     // --- Left Pane: File Explorer ---
-    let items: Vec<ListItem> = app.files.iter()
-        .map(|f| ListItem::new(f.file_name().unwrap_or_default().to_string_lossy().to_string()))
-        .collect();
+    if !app.is_zen_mode {
+        let items: Vec<ListItem> = app.files.iter()
+            .map(|f| ListItem::new(f.file_name().unwrap_or_default().to_string_lossy().to_string()))
+            .collect();
 
-    let title = if app.mode == AppMode::Normal { " [Files] " } else { " Files " };
-    let list = List::new(items)
-        .block(Block::default().title(title).borders(Borders::ALL).border_type(BorderType::Thick))
-        .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD))
-        .highlight_symbol(">> ");
-    f.render_stateful_widget(list, main_panes[0], &mut app.file_list_state);
+        let title = if app.mode == AppMode::Normal { " [Files] " } else { " Files " };
+        
+        let border_color = if app.mode == AppMode::Normal { app.theme.border_focused } else { app.theme.border };
+        
+        let list = List::new(items)
+            .block(Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_type(BorderType::Thick)
+                .style(Style::default().fg(border_color))
+            )
+            .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD))
+            .highlight_symbol(">> ");
+        f.render_stateful_widget(list, main_panes[0], &mut app.file_list_state);
+    }
 
     // --- Right Pane: Editor & Scrollbar ---
     let e_title = match app.mode {
         AppMode::Insert => " [Editor (INSERT)] ",
         AppMode::Visual => " [Editor (VISUAL)] ",
-        _ => " Editor ",
+        _ => if app.is_zen_mode { " Focus Mode " } else { " Editor " },
+    };
+    
+    let editor_border_color = match app.mode {
+        AppMode::Insert | AppMode::Visual => app.theme.border_focused,
+        _ => app.theme.border,
     };
     
     let editor_block = Block::default()
         .title(e_title)
         .borders(Borders::ALL)
-        .border_type(BorderType::Thick);
+        .border_type(BorderType::Thick)
+        .style(Style::default().fg(editor_border_color));
 
     let inner_editor_area = editor_block.inner(main_panes[1]);
     
-    // Update scroll window variables based on cursor to keep it in view
     if app.mode == AppMode::Insert || app.mode == AppMode::Visual {
         app.update_scroll_to_cursor(inner_editor_area.height, inner_editor_area.width);
     }
@@ -739,19 +906,17 @@ fn ui(f: &mut Frame, app: &mut App) {
     let doc_lines = if app.active_file.is_some() {
         generate_highlighted_lines(app)
     } else {
-        vec![Line::from("No note selected. Press 'n' to create one.")]
+        vec![Line::from(Span::styled("No note selected. Press 'n' to create one.", Style::default().fg(app.theme.text_normal)))]
     };
     
     let total_lines = doc_lines.len();
 
     let paragraph = Paragraph::new(doc_lines)
         .block(editor_block)
-        .style(Style::default().fg(Color::White))
-        .scroll((app.editor_scroll_y, app.editor_scroll_x)); // Only inject vertical offset
+        .scroll((app.editor_scroll_y, app.editor_scroll_x)); 
 
     f.render_widget(paragraph, main_panes[1]);
 
-    // Render Scrollbar
     let scrollbar = Scrollbar::default()
         .orientation(ScrollbarOrientation::VerticalRight)
         .begin_symbol(Some("▲"))
@@ -763,10 +928,8 @@ fn ui(f: &mut Frame, app: &mut App) {
         
     f.render_stateful_widget(scrollbar, main_panes[1], &mut scrollbar_state);
 
-    // Handle standard hardware cursor inside the terminal (Only in InsertMode usually)
     if (app.mode == AppMode::Insert || app.mode == AppMode::Visual) && app.active_file.is_some() {
         let (col, row) = app.get_visual_cursor();
-        // Check if cursor is actually within the scrolling view bounds
         if row >= app.editor_scroll_y && row < app.editor_scroll_y + inner_editor_area.height {
             f.set_cursor_position((
                 inner_editor_area.x + col - app.editor_scroll_x,
@@ -781,6 +944,7 @@ fn ui(f: &mut Frame, app: &mut App) {
         AppMode::Insert => " INSERT ",
         AppMode::Command => " COMMAND ",
         AppMode::ShowHelp => " HELP ",
+        AppMode::ShowStats => " STATS ",
         AppMode::PromptNewFile => " PROMPT ",
         AppMode::PromptRenameFile => " RENAME ",
         AppMode::SearchFile => " SEARCH ",
@@ -793,13 +957,11 @@ fn ui(f: &mut Frame, app: &mut App) {
     };
 
     let (filter_mark, color) = match app.mode {
-        AppMode::Normal => (if app.search_query.is_empty() { "" } else { "[Filtered] " }, Color::Blue),
-        AppMode::Insert => ("", Color::Green),
-        AppMode::Command => ("", Color::Yellow),
-        AppMode::Visual => ("", Color::Rgb(255, 165, 0)), // Orange
-        AppMode::ShowHelp => ("", Color::Cyan),
-        AppMode::SearchFile => ("", Color::LightYellow),
-        _ => ("", Color::Magenta),
+        AppMode::Normal => (if app.search_query.is_empty() { "" } else { "[Filtered] " }, app.theme.status_normal),
+        AppMode::Insert => ("", app.theme.status_insert),
+        AppMode::Command => ("", app.theme.status_command),
+        AppMode::Visual => ("", app.theme.status_visual),
+        _ => ("", app.theme.status_other),
     };
 
     let status_text = match app.mode {
@@ -820,6 +982,9 @@ fn ui(f: &mut Frame, app: &mut App) {
         j/Down, k/Up : Move file list\n\
         Enter        : Open highlighted file\n\
         /            : Search/Filter file list\n\
+        z            : Toggle Focus (Zen) Mode\n\
+        Space        : Toggle Checkbox (- [ ])\n\
+        Ctrl+I       : Document Statistics\n\
         \n\
         [ File Operations ]\n\
         n            : Create new file\n\
@@ -836,16 +1001,40 @@ fn ui(f: &mut Frame, app: &mut App) {
         Esc          : Return to Normal Mode\n\
         \n\
         [ App ]\n\
+        :theme [x]   : Set interface theme (x: hacker/ocean/light)\n\
         :q / q       : Quit\n\
         ";
         let help_paragraph = Paragraph::new(help_text).block(
-            Block::default().title(" Help Menu ").borders(Borders::ALL).border_type(BorderType::Double).style(Style::default().bg(Color::Reset).fg(Color::Cyan))
+            Block::default().title(" Help Menu ").borders(Borders::ALL).border_type(BorderType::Double).style(Style::default().bg(Color::Reset).fg(app.theme.status_other))
         );
         f.render_widget(Clear, area);
         f.render_widget(help_paragraph, area);
     }
     
-    // Popup logic refactoring helper
+    if app.mode == AppMode::ShowStats {
+        let area = centered_rect(40, 30, f.area());
+        
+        let word_count = app.content.split_whitespace().count();
+        let char_count = app.content.chars().count();
+        let bytes = app.content.len();
+        let read_time = (word_count as f32 / 200.0).ceil() as usize;
+
+        let stats_text = format!("\n\
+        File Size: {} bytes\n\n\
+        Word Count: {}\n\
+        Character Count: {}\n\n\
+        Estimated Read Time: ~{} min\n\
+        ", bytes, word_count, char_count, read_time);
+
+        let stats_paragraph = Paragraph::new(stats_text)
+            .alignment(ratatui::layout::Alignment::Center)
+            .block(
+                Block::default().title(" Document Stats ").borders(Borders::ALL).border_type(BorderType::Double).style(Style::default().bg(Color::Reset).fg(app.theme.status_other))
+            );
+        f.render_widget(Clear, area);
+        f.render_widget(stats_paragraph, area);
+    }
+    
     let render_prompt = |f: &mut Frame, title: &str, prefix: &str, buffer: &str| {
         let v_margin = (f.area().height.saturating_sub(3)) / 2;
         let area_v = Layout::default().direction(Direction::Vertical).constraints([
@@ -857,9 +1046,9 @@ fn ui(f: &mut Frame, app: &mut App) {
         let p_text = format!("{} {}", prefix, buffer);
         let block = Block::default()
             .title(title).borders(Borders::ALL).border_type(BorderType::Double)
-            .style(Style::default().bg(Color::Reset).fg(Color::Magenta));
+            .style(Style::default().bg(Color::Reset).fg(app.theme.status_other));
             
-        let paragraph = Paragraph::new(p_text.as_str()).block(block).style(Style::default().fg(Color::White));
+        let paragraph = Paragraph::new(p_text.as_str()).block(block).style(Style::default().fg(Color::Reset)); // Changed to Reset so light theme reads correctly
         
         f.render_widget(Clear, area);
         f.render_widget(paragraph, area);

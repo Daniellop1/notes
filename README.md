@@ -27,7 +27,7 @@ As the repository is standard Rust, ensuring you have the Rust 'cargo' toolchain
 installed is all that's required:
 
     git clone <repository_url>
-    cd notes_cli
+    cd notes
     cargo run
     (Or compile for release: cargo build --release)
 
