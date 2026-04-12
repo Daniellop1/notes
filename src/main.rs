@@ -3,6 +3,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
+use magic_crypt::{new_magic_crypt, MagicCryptTrait};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -29,6 +30,7 @@ enum AppMode {
     ShowStats,
     PromptNewFile,
     PromptRenameFile,
+    PromptVaultPassword,
     SearchFile,
     Visual,
 }
@@ -157,6 +159,10 @@ struct App {
     theme: Theme,
     undo_stack: Vec<String>,
     redo_stack: Vec<String>,
+
+    // Vault Encryption
+    master_password: String,
+    vault_active: bool,
 }
 
 impl App {
@@ -190,6 +196,8 @@ impl App {
             theme: Theme::default_theme(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            master_password: String::new(),
+            vault_active: false,
         };
 
         app.refresh_files();
@@ -262,7 +270,8 @@ impl App {
                         self.save_file();
                     }
                     self.active_file = Some(path.clone());
-                    self.content = fs::read_to_string(&path).unwrap_or_default();
+                    let raw = fs::read_to_string(&path).unwrap_or_default();
+                    self.content = self.decrypt_content(&raw);
                     self.cursor_index = 0; 
                     self.editor_scroll_y = 0;
                     self.editor_scroll_x = 0;
@@ -277,11 +286,60 @@ impl App {
 
     fn save_file(&mut self) {
         if let Some(path) = &self.active_file {
-            if let Err(e) = fs::write(path, &self.content) {
+            let data = self.encrypt_content(&self.content.clone());
+            if let Err(e) = fs::write(path, &data) {
                 self.status_message = format!("Error saving: {}", e);
             } else {
-                self.status_message = String::from("Saved.");
+                let lock_mark = if self.vault_active { " 🔒" } else { "" };
+                self.status_message = format!("Saved{}", lock_mark);
             }
+        }
+    }
+
+    // --- Vault Encryption Engine ---
+    fn encrypt_content(&self, content: &str) -> String {
+        if self.vault_active && !self.master_password.is_empty() {
+            let mc = new_magic_crypt!(&self.master_password, 256);
+            mc.encrypt_str_to_base64(content)
+        } else {
+            content.to_string()
+        }
+    }
+
+    fn decrypt_content(&self, raw: &str) -> String {
+        if self.vault_active && !self.master_password.is_empty() {
+            let mc = new_magic_crypt!(&self.master_password, 256);
+            mc.decrypt_base64_to_string(raw)
+                .unwrap_or_else(|_| raw.to_string()) // Graceful fallback to plaintext
+        } else {
+            raw.to_string()
+        }
+    }
+
+    fn apply_vault_password(&mut self) {
+        let password = self.prompt_buffer.clone();
+        self.prompt_buffer.clear();
+        self.mode = AppMode::Normal;
+
+        if password.is_empty() {
+            // Disable vault if empty password given
+            self.vault_active = false;
+            self.master_password.clear();
+            self.status_message = "Vault disabled. Notes will be saved as plaintext.".into();
+            return;
+        }
+
+        self.master_password = password;
+        self.vault_active = true;
+
+        // Attempt to re-decrypt the current buffer with the new password
+        if let Some(path) = self.active_file.clone() {
+            let raw = fs::read_to_string(&path).unwrap_or_default();
+            let decoded = self.decrypt_content(&raw);
+            // Sanity check: if decoded is readable UTF-8-ish Markdown, it worked
+            self.content = decoded;
+            self.cursor_index = self.cursor_index.min(self.content.len());
+            self.status_message = "Vault unlocked. Notes are now encrypted on save. 🔒".into();
         }
     }
 
@@ -745,6 +803,12 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                 } else if app.command_buffer.starts_with(":theme ") {
                                     let theme_name = app.command_buffer.replace(":theme ", "");
                                     app.set_theme(&theme_name);
+                                } else if app.command_buffer == ":vault" {
+                                    app.mode = AppMode::PromptVaultPassword;
+                                    app.prompt_buffer.clear();
+                                    // Don't drop into Normal yet
+                                    app.command_buffer.clear();
+                                    continue;
                                 }
                                 app.mode = AppMode::Normal;
                                 app.command_buffer.clear();
@@ -794,6 +858,17 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                 app.prompt_buffer.clear();
                                 app.refresh_files();
                             }
+                            KeyCode::Char(c) => app.prompt_buffer.push(c),
+                            KeyCode::Backspace => { app.prompt_buffer.pop(); },
+                            _ => {}
+                        },
+                        AppMode::PromptVaultPassword => match key.code {
+                            KeyCode::Esc => {
+                                app.mode = AppMode::Normal;
+                                app.prompt_buffer.clear();
+                                app.status_message = "Vault prompt cancelled.".into();
+                            }
+                            KeyCode::Enter => app.apply_vault_password(),
                             KeyCode::Char(c) => app.prompt_buffer.push(c),
                             KeyCode::Backspace => { app.prompt_buffer.pop(); },
                             _ => {}
@@ -998,6 +1073,7 @@ fn ui(f: &mut Frame, app: &mut App) {
         AppMode::ShowStats => " STATS ",
         AppMode::PromptNewFile => " PROMPT ",
         AppMode::PromptRenameFile => " RENAME ",
+        AppMode::PromptVaultPassword => " VAULT ",
         AppMode::SearchFile => " SEARCH ",
         AppMode::Visual => " VISUAL ",
     };
@@ -1054,7 +1130,8 @@ fn ui(f: &mut Frame, app: &mut App) {
         Ctrl+r       : Redo text change\n\
         \n\
         [ App ]\n\
-        :theme [x]   : Set interface theme (x: hacker/ocean/light)\n\
+        :theme [x]   : Set theme (hacker/ocean/light/default)\n\
+        :vault       : Set/change encryption password\n\
         :q / q       : Quit\n\
         ";
         let help_paragraph = Paragraph::new(help_text).block(
@@ -1115,5 +1192,35 @@ fn ui(f: &mut Frame, app: &mut App) {
         render_prompt(f, " Rename File ", "New Name (*.md):", &app.prompt_buffer);
     } else if app.mode == AppMode::SearchFile {
         render_prompt(f, " List Filter ", "Search:", &app.prompt_buffer);
+    } else if app.mode == AppMode::PromptVaultPassword {
+        // Render vault prompt with masked password (stars instead of characters)
+        let v_margin = (f.area().height.saturating_sub(3)) / 2;
+        let area_v = Layout::default().direction(Direction::Vertical).constraints([
+            Constraint::Length(v_margin), Constraint::Length(5), Constraint::Min(0)]).split(f.area())[1];
+        let h_margin = (f.area().width.saturating_sub(44)) / 2;
+        let area = Layout::default().direction(Direction::Horizontal).constraints([
+            Constraint::Length(h_margin), Constraint::Length(44), Constraint::Min(0)]).split(area_v)[1];
+
+        let masked = "*".repeat(app.prompt_buffer.len());
+        let vault_status = if app.vault_active { " [ACTIVE 🔒] " } else { " [OFF] " };
+        let p_text = format!("Password{}: {}", vault_status, masked);
+        let hint = "\n(Enter to confirm, Esc to cancel, empty=disable)";
+        let full_text = format!("{}{}", p_text, hint);
+
+        let block = Block::default()
+            .title(" 🔐 Vault Encryption ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Double)
+            .style(Style::default().bg(Color::Reset).fg(Color::Magenta));
+
+        let paragraph = Paragraph::new(full_text.as_str())
+            .block(block)
+            .style(Style::default().fg(Color::White));
+
+        f.render_widget(Clear, area);
+        f.render_widget(paragraph, area);
+        // Place cursor at end of masked input
+        let prefix_len = format!("Password{}:  ", vault_status).chars().count() as u16;
+        f.set_cursor_position((area.x + 1 + prefix_len + masked.len() as u16, area.y + 1));
     }
 }
