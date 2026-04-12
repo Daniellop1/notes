@@ -8,3 +8,5 @@ ratatui = "0.30.0"
 crossterm = "0.29.0"
 home = "0.5.9"
 magic-crypt = "4.0.1"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
