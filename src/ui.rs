@@ -294,6 +294,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         Space        : Toggle Checkbox (- [ ])\n\
         Ctrl+I       : Document Statistics\n\
         \n\
+        [ Movement ]\n\
+        w, b         : Next/Previous word\n\
+        gg, G        : Jump to Top/Bottom\n\
+        h, j, k, l   : Manual movements\n\
+        \n\
         [ File Operations ]\n\
         n            : Create new file\n\
         r            : Rename active file\n\
