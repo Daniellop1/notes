@@ -1,5 +1,7 @@
 use std::collections::HashSet;
-use std::{fs, path::PathBuf};
+use std::fs::{self, File};
+use std::io::Read;
+use std::path::PathBuf;
 use ratatui::widgets::ListState;
 use crate::theme::Theme;
 use crate::vault::{EncryptBits, Vault};
@@ -133,9 +135,13 @@ impl App {
                 if path.is_file() && path.extension().map_or(false, |ext| ext == "md") {
                     let fname = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
                     
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        // Track encryption status
-                        if Vault::is_encrypted(&content) {
+                    // Optimization: Only read the header, not the full file
+                    if let Ok(mut file) = File::open(&path) {
+                        let mut header = [0u8; 16];
+                        let bytes_read = file.read(&mut header).unwrap_or(0);
+                        let header_str = String::from_utf8_lossy(&header[..bytes_read]);
+                        
+                        if Vault::is_encrypted(&header_str) {
                             self.encrypted_files.insert(path.clone());
                         }
 
@@ -144,7 +150,12 @@ impl App {
                         } else if fname.contains(&q) {
                             true
                         } else {
-                            content.to_lowercase().contains(&q)
+                            // Only read full content if we are searching within the file
+                            if let Ok(content) = fs::read_to_string(&path) {
+                                content.to_lowercase().contains(&q)
+                            } else {
+                                false
+                            }
                         };
 
                         if matches {

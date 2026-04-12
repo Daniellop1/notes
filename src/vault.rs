@@ -34,10 +34,10 @@ impl Vault {
     const SALT_LEN: usize = 16;
     const NONCE_LEN: usize = 12;
 
-    // Explicit Argon2id parameters (High security)
-    const ARGON2_MEM: u32 = 65536; // 64 MB
+    // Explicit Argon2id parameters (Balanced for Speed/Security)
+    const ARGON2_MEM: u32 = 4096; // 4 MB
     const ARGON2_ITER: u32 = 3;
-    const ARGON2_PARA: u32 = 4;
+    const ARGON2_PARA: u32 = 1;
 
     fn get_argon2() -> Argon2<'static> {
         use argon2::{Algorithm, Params, Version};
