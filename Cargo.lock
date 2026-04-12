@@ -670,7 +670,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "notes_cli"
+name = "notes"
 version = "0.1.0"
 dependencies = [
  "crossterm",

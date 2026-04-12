@@ -155,6 +155,8 @@ struct App {
     // Epic Toggle Features
     is_zen_mode: bool,
     theme: Theme,
+    undo_stack: Vec<String>,
+    redo_stack: Vec<String>,
 }
 
 impl App {
@@ -186,6 +188,8 @@ impl App {
             editor_scroll_x: 0,
             is_zen_mode: false,
             theme: Theme::default_theme(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         };
 
         app.refresh_files();
@@ -263,6 +267,8 @@ impl App {
                     self.editor_scroll_y = 0;
                     self.editor_scroll_x = 0;
                     self.visual_anchor = None;
+                    self.undo_stack.clear();
+                    self.redo_stack.clear();
                     self.status_message = format!("Loaded: {}", path.file_name().unwrap_or_default().to_string_lossy());
                 }
             }
@@ -420,6 +426,7 @@ impl App {
                 changed = true;
             }
             if changed {
+                self.save_undo_state();
                 self.content = rebuilt.join("\n");
                 self.save_file();
                 self.status_message = "Task state toggled.".into();
@@ -444,8 +451,10 @@ impl App {
     }
 
     fn insert_string(&mut self, s: &str) {
+        self.save_undo_state();
         self.content.insert_str(self.cursor_index, s);
         self.cursor_index += s.len();
+        self.save_file();
     }
 
     fn delete_char(&mut self) {
@@ -537,12 +546,51 @@ impl App {
             let start = anchor.min(self.cursor_index);
             let end = anchor.max(self.cursor_index);
             self.clipboard = self.content[start..end].to_string();
+            self.save_undo_state();
             self.content.drain(start..end);
             self.cursor_index = start;
             self.mode = AppMode::Normal;
             self.visual_anchor = None;
             self.status_message = format!("Cut {} bytes.", self.clipboard.len());
             self.save_file();
+        }
+    }
+
+    // --- Undo / Redo System ---
+    fn save_undo_state(&mut self) {
+        if let Some(last) = self.undo_stack.last() {
+            if last == &self.content {
+                return; // Suppress identical consecutive states
+            }
+        }
+        self.undo_stack.push(self.content.clone());
+        if self.undo_stack.len() > 50 {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
+    }
+
+    fn perform_undo(&mut self) {
+        if let Some(prev_state) = self.undo_stack.pop() {
+            self.redo_stack.push(self.content.clone());
+            self.content = prev_state;
+            self.cursor_index = self.cursor_index.min(self.content.len());
+            self.save_file();
+            self.status_message = "Undo".into();
+        } else {
+            self.status_message = "Already at oldest change".into();
+        }
+    }
+
+    fn perform_redo(&mut self) {
+        if let Some(next_state) = self.redo_stack.pop() {
+            self.undo_stack.push(self.content.clone());
+            self.content = next_state;
+            self.cursor_index = self.cursor_index.min(self.content.len());
+            self.save_file();
+            self.status_message = "Redo".into();
+        } else {
+            self.status_message = "Already at newest change".into();
         }
     }
 }
@@ -599,6 +647,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                 app.save_file();
                                 return Ok(());
                             }
+                            (KeyCode::Char('u'), _) => app.perform_undo(),
+                            (KeyCode::Char('r'), KeyModifiers::CONTROL) => app.perform_redo(),
                             // Epic Focus Bindings
                             (KeyCode::Char('z'), _) => {
                                 app.is_zen_mode = !app.is_zen_mode;
@@ -633,6 +683,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             (KeyCode::Char('?'), _) | (KeyCode::F(1), _) => app.mode = AppMode::ShowHelp,
                             (KeyCode::Char('i'), _) => {
                                 if app.active_file.is_some() {
+                                    app.save_undo_state();
                                     app.mode = AppMode::Insert;
                                     app.status_message = "Entering Insert Mode".into();
                                 }
@@ -999,6 +1050,8 @@ fn ui(f: &mut Frame, app: &mut App) {
         d (in vis)   : Cut text\n\
         p            : Paste clipboard\n\
         Esc          : Return to Normal Mode\n\
+        u            : Undo previous text change\n\
+        Ctrl+r       : Redo text change\n\
         \n\
         [ App ]\n\
         :theme [x]   : Set interface theme (x: hacker/ocean/light)\n\
