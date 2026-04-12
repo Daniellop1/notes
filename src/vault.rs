@@ -121,3 +121,36 @@ impl Vault {
         }
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_v2_encrypt_decrypt() {
+        let content = "Hello Secure World";
+        let password = "mysecretpassword";
+        let encrypted = Vault::encrypt(content, password, EncryptBits::B256);
+        
+        assert!(Vault::is_encrypted(&encrypted));
+        
+        // Correct password
+        let decrypted = Vault::decrypt(&encrypted, password).unwrap();
+        assert_eq!(decrypted, content);
+        
+        // Empty password (Locked)
+        let locked_err = Vault::decrypt(&encrypted, "").unwrap_err();
+        assert!(locked_err.contains("LOCKED"));
+        
+        // Wrong password
+        let wrong_err = Vault::decrypt(&encrypted, "wrong").unwrap_err();
+        assert!(wrong_err.contains("WRONG PASSWORD"));
+    }
+
+    #[test]
+    fn test_plaintext_pass_thru() {
+        let content = "Just plain text";
+        let decrypted = Vault::decrypt(content, "").unwrap();
+        assert_eq!(decrypted, content);
+        assert!(!Vault::is_encrypted(content));
+    }
+}
