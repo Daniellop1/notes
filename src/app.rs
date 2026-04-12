@@ -171,16 +171,29 @@ impl App {
                     }
                     self.active_file = Some(path.clone());
                     let raw = fs::read_to_string(&path).unwrap_or_default();
-                    self.content = Vault::decrypt(&raw, &self.master_password).unwrap_or_else(|e| e);
+                    match Vault::decrypt(&raw, &self.master_password) {
+                        Ok(res) => {
+                            self.content = res.content;
+                            if res.migration_needed {
+                                self.is_modified = true;
+                                self.status_message = "Migrating note to secure format... [Save to finalize]".into();
+                            } else {
+                                self.status_message = format!("Loaded: {}", path.file_name().unwrap_or_default().to_string_lossy());
+                            }
+                        }
+                        Err(e) => {
+                            self.content = e;
+                            self.is_modified = false;
+                            self.status_message = "Decryption failed or file locked.".into();
+                        }
+                    }
                     self.cursor_index = 0; 
                     self.editor_scroll_y = 0;
                     self.editor_scroll_x = 0;
                     self.visual_anchor = None;
                     self.undo_stack.clear();
                     self.redo_stack.clear();
-                    self.is_modified = false;
                     self.pending_delete = false;
-                    self.status_message = format!("Loaded: {}", path.file_name().unwrap_or_default().to_string_lossy());
                 }
             }
         }
@@ -221,16 +234,22 @@ impl App {
 
         if let Some(path) = self.active_file.clone() {
             let raw = fs::read_to_string(&path).unwrap_or_default();
-            let decoded = Vault::decrypt(&raw, &self.master_password).unwrap_or_else(|e| e);
-            self.content = decoded;
-            self.cursor_index = self.cursor_index.min(self.content.len());
-
-            if self.content.starts_with("[WRONG PASSWORD") {
-                self.status_message = "Wrong password! File still locked.".into();
-                self.vault_active = false;
-                self.master_password.clear();
-            } else {
-                self.status_message = format!("Vault unlocked ({}) - saves will be encrypted. [LOCKED]", self.encrypt_bits.label());
+            match Vault::decrypt(&raw, &self.master_password) {
+                Ok(res) => {
+                    self.content = res.content;
+                    self.cursor_index = self.cursor_index.min(self.content.len());
+                    if res.migration_needed {
+                        self.is_modified = true;
+                        self.status_message = "Vault unlocked (Legacy). Save to migrate to secure AES-GCM.".into();
+                    } else {
+                        self.status_message = format!("Vault unlocked (AES-256-GCM) - saves will be encrypted. [LOCKED]");
+                    }
+                }
+                Err(e) => {
+                    self.status_message = e;
+                    self.vault_active = false;
+                    self.master_password.clear();
+                }
             }
         }
     }
